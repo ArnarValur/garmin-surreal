@@ -11,3 +11,8 @@ __pycache__
 
 # Claude auto-memory symlink (machine-local, never commit)
 conductor/memory
+
+# Secrets (Garmin + SurrealDB credentials) — never commit
+.env
+.env.*
+!.env.example
