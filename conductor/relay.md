@@ -3,6 +3,13 @@
 > One entry per session, ≤10 lines, plain language. Newest first.
 > Say what happened and what it means for the human — then point, don't retell.
 
+## 2026-10-23 (late) — Nightly backups for every Saturn SurrealDB
+
+- **What happened:** Added `/srv/saturn-docker/surrealdb-backup/` on Saturn: a nightly systemd timer exports every namespace/database of owui, health and dittodatto over HTTP (no passwords on command lines), and a restore test imports a dump into a throwaway container and compares row counts. First run: 14 databases, ~11 MB gzipped, under 4 s. Restores matched (health only grew from the running backfill).
+- **Status:** Saturn loop + 1-year backfill running; backups scheduled 03:30.
+- **Decisions:** none new (backups live with Saturn's docker docs, not in this repo).
+- **Next:** check the backfill result; off-machine backup copy; dashboard in a new session.
+
 ## 2026-10-23 (evening) — Live on Saturn, raw data, 1-year backfill
 
 - **What happened:** Garmin login worked (old email, password remembered; Garmin rate-limited the guesses but the third login method got through). Bench T3–T5 passed: 7-day + 30-day fetch, re-fetch kept counts identical, weigh-in and sleep matched the Connect app, phone sync arrived within 5 min. Added `raw` (every Garmin response stored whole) and `extras` (endpoints upstream never calls) after a capability probe; reviewed (9 fixes). Fixed upstream's broken intraday refresh. Deployed to Saturn with its own SurrealDB.

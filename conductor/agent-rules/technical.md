@@ -10,3 +10,8 @@
 6. **Never add a drifting tag to the record key** (Device, ActivitySelector, User_ID, ActivityName): a changed value makes a second row. A tag that tells same-time points apart must be in the key, or points merge silently — log line `Collision`.
 7. **Run fetches locally with `TZ=UTC`** to match the container (LactateThreshold time depends on the host zone).
 8. **`solar_intensity` on a non-solar watch** raises inside `daily_fetch_write` and skips the rest of that day — keep it out of `FETCH_SELECTION`.
+9. **garminconnect 0.3.7: `connectapi(path, method="POST")` raises TypeError.** Use the library's own methods (`request_reload(date)` restores offloaded intraday data in ~10 s).
+10. **Garmin offloads intraday data older than ~6 months** — old days return daily totals only until `request_reload`; run deep backfills with `REQUEST_INTRADAY_DATA_REFRESH=True`.
+11. **SDK sends Python `None` as NONE**, which drops object keys. For raw JSON send NULL (`CBORSimpleValue(22)`, `surreal_store._NULL`).
+12. **Upstream wraps Garmin calls in broad `except Exception`** — anything raised from inside a Garmin call (e.g. a raw-write error) is swallowed and the date counts as done; defer such errors and raise them at the end of `daily_fetch_write`.
+13. **Fork tags are `surreal-v*`** — upstream already owns `v0.x`.

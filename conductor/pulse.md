@@ -1,15 +1,16 @@
 # Pulse — garmin-surreal
 
-> **Updated:** 2026-10-23 19:45 by checkpoint
+> **Updated:** 2026-10-23 19:50 by checkpoint
 > State only, cap ~60 lines. Rewritten from scratch at every checkpoint —
 > if you are appending to this file, you are doing it wrong.
 
 ## 📍 Now — what runs where
 
-- **Saturn (production):** `/srv/saturn-docker/garmin/` — `garmin-fetch` (image `garmin-surreal:surreal-v0.1.0`, update loop every 300 s, `restart: unless-stopped`) + `health-surrealdb` (SurrealDB 3.2.4, saturn-net, port 8087). Namespace `health`, db `garmin`, user `garmin_writer`. `.env` 640 claude:docker; Garmin tokens in `garminconnect-tokens/` (copied from PlutoII, 600 uid 1000); raw FIT files in `fit-files/`. Run `docker compose` there as `claude` (docker group).
-- **Saturn backfill:** container `garmin-backfill` (`docker compose run -d`), 2025-10-23 → 2026-10-15, `REQUEST_INTRADAY_DATA_REFRESH=True` (Garmin restores offloaded intraday data; a DENIED reply pauses it 24 h). Check: `docker logs garmin-backfill | grep -E "Bulk update success|Traceback|DENIED"`; remove the container when done.
-- **Repo:** `~/Projects/garmin-surreal`, `main` = tag `surreal-v0.1.0` (pushed to `ArnarValur/garmin-surreal`). 62 tests pass. Upstream tags `v0.x` are upstream's — the fork tags `surreal-v*`.
-- **PlutoII bench:** `pluto-surrealdb` `health/garmin` holds 30 days + raw tables from the bench runs. No fetcher running on PlutoII anymore.
+- **Saturn (production):** `/srv/saturn-docker/garmin/` — `garmin-fetch` (image `garmin-surreal:surreal-v0.1.0`, loop every 300 s, `restart: unless-stopped`, raw + extras on) + `health-surrealdb` (SurrealDB 3.2.4, saturn-net, port 8087). Namespace `health`, db `garmin`, user `garmin_writer`. `.env` 640 claude:docker; tokens in `garminconnect-tokens/` (600, uid 1000); raw FIT files in `fit-files/`. Run `docker compose` there as `claude`.
+- **Saturn backfill:** container `garmin-backfill`, 2025-10-23 → 2026-10-15 with `REQUEST_INTRADAY_DATA_REFRESH=True`; 30/357 days done at 19:45 (~14 s/day). Check: `docker logs garmin-backfill | grep -E "Bulk update success|Traceback|DENIED"`; `docker rm garmin-backfill` when done.
+- **Backups (all Saturn SurrealDBs):** `surrealdb-backup.timer` 03:30 nightly → `/srv/backups/surrealdb/<server>/<date>/` (14 daily + 12 monthly). Script, restore test and README in `/srv/saturn-docker/surrealdb-backup/`. Restore-tested 2026-10-23 for owui, dittodatto and health. Same disk as the data.
+- **Repo:** `~/Projects/garmin-surreal`, `main` = tag `surreal-v0.1.0` + conductor commits, pushed to `ArnarValur/garmin-surreal`. 62 tests pass.
+- **PlutoII bench:** `pluto-surrealdb` `health/garmin` keeps the bench data. No fetcher runs on PlutoII.
 
 ## 🚀 Active tracks
 
@@ -21,12 +22,12 @@
 
 ## 📋 Next queue
 
-1. When `garmin-backfill` finishes: per-table counts on Saturn, spot-check an old day (intraday restored?), `docker rm garmin-backfill`.
-2. Watch the first days of the Saturn loop (`docker logs garmin-fetch | grep -E "ERROR|Collision|Skipped"`).
-3. After the US DST change / Oslo DST (25 Oct): upstream computes the UTC offset once at start — restart `garmin-fetch` or confirm dates still line up.
-4. Backups for `health-surrealdb-data` (not set up).
-5. Parse useful raw tables into views (sleep sub-scores, SpO2, floors, weather) — track later.
-6. Later per spec §9: aggregate tables, own dashboard, MCP/Hermes read tool over `health/garmin`.
+1. When `garmin-backfill` finishes: per-table counts on Saturn, spot-check an old day, `docker rm garmin-backfill`.
+2. Watch the Saturn loop for a few days (`docker logs garmin-fetch | grep -E "ERROR|Collision|Skipped"`).
+3. Oslo DST ends 2026-10-25: upstream computes the UTC offset once at start — restart `garmin-fetch` after that.
+4. Off-machine copy of `/srv/backups/surrealdb` (backups share Saturn's disk).
+5. Dashboard — Arnar starts it in its own session.
+6. Read useful raw tables out (sleep sub-scores, SpO2, floors, weather, PRs); later per spec §9: aggregates, MCP/Hermes read tool.
 
 ## 📌 Parked
 

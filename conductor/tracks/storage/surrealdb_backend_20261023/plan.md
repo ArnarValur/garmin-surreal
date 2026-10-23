@@ -32,6 +32,8 @@
 - [x] Storage: own `health-surrealdb` (ADR-0001)
 - [x] Image `garmin-surreal:surreal-v0.1.0` built on Saturn, `health/garmin` + `garmin_writer`, compose stack, tokens copied, loop live, survives restart
 - [ ] 1-year backfill (2025-10-23 →) with intraday refresh — running
+- [x] Nightly backups of every Saturn SurrealDB incl. health (`/srv/saturn-docker/surrealdb-backup/`), restore-tested
+- [ ] Off-machine copy of the backups
 
 ## Phase 5 — Everything Garmin has
 
