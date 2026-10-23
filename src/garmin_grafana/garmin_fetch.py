@@ -4,9 +4,10 @@ import re
 import base64, requests, time, pytz, logging, os, sys, dotenv, io, zipfile
 from fitparse import FitFile, FitParseError
 from datetime import datetime, timedelta
-from influxdb import InfluxDBClient
-from influxdb.exceptions import InfluxDBClientError
-from influxdb_client_3 import InfluxDBClient3, InfluxDBError
+try:
+    from . import surreal_store
+except ImportError:
+    import surreal_store
 import xml.etree.ElementTree as ET
 from garminconnect import (
     Garmin,
@@ -33,15 +34,8 @@ if env_override:
     logging.warning("System ENV variables are overridden with override-default-vars.env")
 
 # %%
-INFLUXDB_VERSION = os.getenv("INFLUXDB_VERSION",'1') # Your influxdb database version (accepted values are '1' or '3')
-assert INFLUXDB_VERSION in ['1','3'], "Only InfluxDB version 1 or 3 is allowed - please ensure to set this value to either 1 or 3"
-INFLUXDB_HOST = os.getenv("INFLUXDB_HOST",'localhost') # Required
-INFLUXDB_PORT = int(os.getenv("INFLUXDB_PORT", 8086)) # Required
-INFLUXDB_USERNAME = os.getenv("INFLUXDB_USERNAME", 'influxdb_username') # Required
-INFLUXDB_PASSWORD = os.getenv("INFLUXDB_PASSWORD", 'influxdb_access_password') # Required
-INFLUXDB_DATABASE = os.getenv("INFLUXDB_DATABASE", 'GarminStats') # Required
-INFLUXDB_V3_ACCESS_TOKEN = os.getenv("INFLUXDB_V3_ACCESS_TOKEN",'') # InfluxDB V3 Access token, required only for InfluxDB V3
-INFLUXDB_ORG = os.getenv("INFLUXDB_ORG", 'default') # required only for InfluxDB V3 
+# SurrealDB connection settings (SURREALDB_URI, SURREALDB_NS, SURREALDB_DB, SURREALDB_USER, SURREALDB_PASS) are read by surreal_store.py
+INFLUXDB_DATABASE = os.getenv("SURREALDB_DB", 'garmin') # Only the value of the legacy Database_Name tag - SurrealDB leaves it out of record IDs and content
 TOKEN_DIR = os.getenv("TOKEN_DIR", "~/.garminconnect") # optional
 GARMINCONNECT_EMAIL = (os.environ.get("GARMINCONNECT_EMAIL") or "").strip() or None # optional, asks in prompt on run if not provided
 _garmin_pw_b64 = os.getenv("GARMINCONNECT_BASE64_PASSWORD")
@@ -56,7 +50,6 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO") # optional
 FETCH_FAILED_WAIT_SECONDS = int(os.getenv("FETCH_FAILED_WAIT_SECONDS", 1800)) # optional
 RATE_LIMIT_CALLS_SECONDS = int(os.getenv("RATE_LIMIT_CALLS_SECONDS", 5)) # optional
 MAX_CONSECUTIVE_500_ERRORS = int(os.getenv("MAX_CONSECUTIVE_500_ERRORS", 10)) # optional, maximum consecutive HTTP 500 errors before continuing without retrying
-INFLUXDB_ENDPOINT_IS_HTTP = False if os.getenv("INFLUXDB_ENDPOINT_IS_HTTP") in ['False','false','FALSE','f','F','no','No','NO','0'] else True # optional
 GARMIN_DEVICENAME_AUTOMATIC = False if GARMIN_DEVICENAME != "Unknown" else True # optional
 UPDATE_INTERVAL_SECONDS = int(os.getenv("UPDATE_INTERVAL_SECONDS", 300)) # optional
 FETCH_SELECTION = os.getenv("FETCH_SELECTION", "daily_avg,sleep,steps,heartrate,stress,breathing,hrv,fitness_age,vo2,activity,race_prediction,body_composition,lifestyle") # additional available values are lactate_threshold,training_status,training_readiness,hill_score,endurance_score,blood_pressure,hydration,solar_intensity,cycling_dynamics which you can add to the list seperated by , without any space
@@ -86,43 +79,7 @@ logging.basicConfig(
 )
 
 # %%
-try:
-    if INFLUXDB_ENDPOINT_IS_HTTP:
-        if INFLUXDB_VERSION == '1':
-            influxdbclient = InfluxDBClient(host=INFLUXDB_HOST, port=INFLUXDB_PORT, username=INFLUXDB_USERNAME, password=INFLUXDB_PASSWORD)
-            influxdbclient.switch_database(INFLUXDB_DATABASE)
-        else:
-            influxdbclient = InfluxDBClient3(
-            host=f"http://{INFLUXDB_HOST}:{INFLUXDB_PORT}",
-            token=INFLUXDB_V3_ACCESS_TOKEN,
-            org=INFLUXDB_ORG,
-            database=INFLUXDB_DATABASE
-            )
-    else:
-        if INFLUXDB_VERSION == '1':
-            influxdbclient = InfluxDBClient(host=INFLUXDB_HOST, port=INFLUXDB_PORT, username=INFLUXDB_USERNAME, password=INFLUXDB_PASSWORD, ssl=True, verify_ssl=True)
-            influxdbclient.switch_database(INFLUXDB_DATABASE)
-        else:
-            influxdbclient = InfluxDBClient3(
-            host=f"https://{INFLUXDB_HOST}:{INFLUXDB_PORT}",
-            token=INFLUXDB_V3_ACCESS_TOKEN,
-            org=INFLUXDB_ORG,
-            database=INFLUXDB_DATABASE
-            )
-    demo_point = {
-    'measurement': 'DemoPoint',
-    'time': (datetime.now(pytz.utc) - timedelta(minutes=1)).isoformat(timespec='seconds'),
-    'tags': {'DemoTag': 'DemoTagValue'},
-    'fields': {'DemoField': 0}
-     }
-    # The following code block tests the connection by writing/overwriting a demo point. raises error and aborts if connection fails. 
-    if INFLUXDB_VERSION == '1':
-        influxdbclient.write_points([demo_point])
-    else:
-        influxdbclient.write(record=[demo_point])
-except (InfluxDBClientError, InfluxDBError) as err:
-    logging.error("Unable to connect with influxdb database! Aborted")
-    raise InfluxDBClientError("InfluxDB connection failed:" + str(err))
+surreal_store.connect() # Connects to SurrealDB and checks it can write there - raises and aborts if the connection fails
 
 # %%
 def iter_days(start_date: str, end_date: str):
@@ -191,22 +148,16 @@ def _is_http_status_error(err, status_code):
     return re.search(rf"\b{status_code}\b", str(err)) is not None
 
 # %%
-def write_points_to_influxdb(points):
-    write_chunk_size = 20000
+def write_points_to_influxdb(points): # Name kept for the importers - writes to SurrealDB
     try:
         if len(points) != 0:
             if TAG_MEASUREMENTS_WITH_USER_EMAIL:
                 for item in points:
                     item['tags'].update({'User_ID': garmin_obj.display_name or 'Unknown'})
-            # Write in chunks - Issue reported for large activities data containing >20000 points - Error 413 : payload too large
-            for i in range(0, len(points), write_chunk_size):
-                if INFLUXDB_VERSION == '1':
-                    influxdbclient.write_points(points[i:i + write_chunk_size])
-                else:
-                    influxdbclient.write(record=points[i:i + write_chunk_size])
-            logging.info("Success : updated influxDB database with new points")
-    except (InfluxDBClientError, InfluxDBError) as err:
-        logging.error("Write failed : Unable to connect with database! " + str(err))
+            surreal_store.write_points(points) # Batched upsert-merge - re-writing a point updates it in place
+    except surreal_store.SurrealStoreError as err:
+        logging.error("Write failed : Unable to write to SurrealDB! " + str(err))
+        raise # Abort this date so it is retried instead of silently leaving a gap
 
 # %%
 def get_daily_stats(date_str):
@@ -753,36 +704,11 @@ def get_activity_summary(date_str):
 def purge_existing_strength_exercise_sets(activity_id):
     """Delete stale strength rows before rewriting the current Garmin snapshot.
 
-    Edited Garmin exercises can change exercise tags. Without removing the
-    previous series first, InfluxDB keeps the stale and corrected rows in
-    parallel because the tags no longer match.
+    Edited Garmin exercises can change exercise tags, and deleted sets are
+    never overwritten. Without removing the previous rows first, the stale and
+    corrected rows stay side by side.
     """
-    if INFLUXDB_VERSION != '1':
-        logging.warning(
-            f"InfluxDB version {INFLUXDB_VERSION} does not support purging StrengthExerciseSet series for activity {activity_id}. "
-            "Applying the default refresh behavior; edited exercises may produce duplicated rows."
-        )
-        return True
-
-    if not hasattr(influxdbclient, 'delete_series'):
-        logging.warning(
-            f"InfluxDB client does not support purging StrengthExerciseSet series for activity {activity_id}. "
-            "Applying the default refresh behavior; edited exercises may produce duplicated rows."
-        )
-        return True
-
-    try:
-        influxdbclient.delete_series(
-            measurement='StrengthExerciseSet',
-            tags={'ActivityID': str(activity_id)},
-        )
-        logging.info(f"Purged existing StrengthExerciseSet series for activity {activity_id}")
-        return True
-    except (InfluxDBClientError, InfluxDBError) as err:
-        logging.warning(
-            f"Failed to purge existing StrengthExerciseSet series for activity {activity_id}: {err}"
-        )
-        return False
+    return surreal_store.purge_strength_sets(activity_id)
 
 
 # %%
@@ -1775,13 +1701,12 @@ if __name__ == "__main__":
         exit(0)
     else:
         try:
-            if INFLUXDB_VERSION == "1":
-                last_influxdb_sync_time_UTC = pytz.utc.localize(datetime.strptime(list(influxdbclient.query(f"SELECT * FROM HeartRateIntraday ORDER BY time DESC LIMIT 1").get_points())[0]['time'],"%Y-%m-%dT%H:%M:%SZ"))
-            else:
-                last_influxdb_sync_time_UTC = pytz.utc.localize(influxdbclient.query(query="SELECT * FROM HeartRateIntraday ORDER BY time DESC LIMIT 1", language="influxql").to_pylist()[0]['time'])
+            last_influxdb_sync_time_UTC = surreal_store.last_sync_time() # Newest HeartRateIntraday time
+            if last_influxdb_sync_time_UTC is None:
+                raise LookupError("HeartRateIntraday is empty")
         except Exception as err:
             logging.error(err)
-            logging.warning("No previously synced data found in local InfluxDB database, defaulting to 7 day initial fetching. Use specific start date ENV variable to bulk update past data")
+            logging.warning("No previously synced data found in SurrealDB, defaulting to 7 day initial fetching. Use specific start date ENV variable to bulk update past data")
             last_influxdb_sync_time_UTC = (datetime.today() - timedelta(days=7)).astimezone(pytz.timezone("UTC"))
         try:
             if USER_TIMEZONE: # If provided by user, using that. 

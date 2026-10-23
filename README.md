@@ -2,6 +2,42 @@
 <img src="https://i.imgur.com/PYsbwqj.png" width="450" height="164" align="center">
 </p>
 
+# garmin-surreal — this fork stores Garmin data in SurrealDB
+
+This is a fork of [arpanghosh8453/garmin-grafana](https://github.com/arpanghosh8453/garmin-grafana) (BSD-3-Clause). It keeps upstream's Garmin fetcher and replaces InfluxDB with **SurrealDB as the only storage backend**. Data only: no Grafana, no InfluxDB, no CSV exporter. Everything below the line after this section is upstream's README; its InfluxDB/Grafana setup, `easy-install.sh`, the k8s files and `Grafana_*` folders are kept only to make upstream rebases painless and are not used here.
+
+**How data is stored.** Each measurement (`HeartRateIntraday`, `SleepSummary`, `BodyComposition`, `ActivityGPS`, …) is a table. Each point is one record whose ID starts with its UTC time, e.g. `HeartRateIntraday:[d'2026-10-01T06:00:00Z']` or `ActivityLap:[d'…', '1234567890', '3']` (time, then the key tags, then key fields). Records hold every non-empty field at the top level plus `time` (datetime) and `tags` (object). Garmin's raw units are kept (weight is in grams). Writes are upsert-merge, so re-fetching a day updates rows in place and never changes row counts. A day reads as an ID range:
+
+```sql
+SELECT * FROM HeartRateIntraday:[d'2026-10-01T00:00:00Z']..[d'2026-10-02T00:00:00Z'];
+```
+
+All SurrealDB code lives in [`src/garmin_grafana/surreal_store.py`](src/garmin_grafana/surreal_store.py); `garmin_fetch.py` only calls it at four places (connect, write, strength-set purge, last-sync lookup).
+
+**Environment variables** (same names as [owui-surrealdb-adapter](https://github.com/ArnarValur/owui-surrealdb-adapter)):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `SURREALDB_URI` | `ws://localhost:8000/rpc` | Server URL (`ws://`, `wss://`, `http(s)://`) |
+| `SURREALDB_NS` | `health` | Namespace |
+| `SURREALDB_DB` | `garmin` | Database |
+| `SURREALDB_USER` / `SURREALDB_PASS` | — | A database-level user (tried first), or a root user |
+| `SURREALDB_BATCH_SIZE` | `2000` | Rows per upsert query |
+
+Create the database user once as root:
+
+```sql
+DEFINE NAMESPACE IF NOT EXISTS health; USE NS health;
+DEFINE DATABASE IF NOT EXISTS garmin; USE NS health DB garmin;
+DEFINE USER garmin_writer ON DATABASE PASSWORD 'choose-one' ROLES EDITOR;
+```
+
+All of upstream's Garmin variables still apply (`GARMINCONNECT_*`, `FETCH_SELECTION`, `USER_TIMEZONE`, `UPDATE_INTERVAL_SECONDS`, `RATE_LIMIT_CALLS_SECONDS`, `MANUAL_START_DATE`/`MANUAL_END_DATE`, …). See [`.env.example`](.env.example) and [`compose-example.yml`](compose-example.yml). Leave `solar_intensity` out of `FETCH_SELECTION` unless the watch has solar charging: on other watches Garmin's solar endpoint raises an error that skips the rest of that day's fetch.
+
+**Differences from upstream's InfluxDB behaviour:** a failed database write stops that date's fetch with an error (upstream logged and moved on, leaving a gap), and two points that would overwrite each other in one write are logged as `Collision`. Multi-user setups (`TAG_MEASUREMENTS_WITH_USER_EMAIL`) should use one SurrealDB database per user.
+
+---
+
 # Grafana for Garmin Dashboard
 
 A docker container to fetch data from Garmin servers and store the data in a local influxdb database for appealing visualization with Grafana.
