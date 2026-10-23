@@ -73,7 +73,7 @@ def test_point_with_only_empty_fields_is_skipped():
 
 def test_out_of_range_int_becomes_float():
     row = surreal_store.point_to_row(hr_point(0, big=2 ** 64))
-    assert row["content"]["big"] == float(2 ** 64)
+    assert type(row["content"]["big"]) is float and row["content"]["big"] == float(2 ** 64)
 
 
 def test_tags_drop_database_name_none_and_empty():
@@ -108,6 +108,29 @@ def test_strength_sets_in_one_second_stay_apart():
                 "fields": {"SetOrder": order, "Reps": 5}}
     points = [strength("Squat", 1), strength("Squat", 2), strength("Goblet", 3)]
     assert len(surreal_store.points_to_rows(points)) == 3
+
+
+def test_same_set_order_with_other_exercise_stays_apart():
+    def strength(category, label):
+        return {"measurement": "StrengthExerciseSet", "time": T0.isoformat(),
+                "tags": {"ActivityID": 9, "ExerciseCategory": category, "ExerciseLabel": label},
+                "fields": {"SetOrder": 1}}
+    points = [strength("SQUAT", "Squat"), strength("SQUAT", "Goblet"), strength("LUNGE", "Squat")]
+    assert len(surreal_store.points_to_rows(points)) == 3
+
+
+@pytest.mark.parametrize("measurement,tag", [("BloodPressure", "Source"), ("BodyComposition", "SourceType")])
+def test_same_second_readings_from_two_sources_stay_apart(measurement, tag):
+    points = [{"measurement": measurement, "time": T0.isoformat(), "tags": {tag: source},
+               "fields": {"value": 1}} for source in ("MANUAL", "INDEX_SCALE")]
+    assert len(surreal_store.points_to_rows(points)) == 2
+
+
+def test_key_does_not_depend_on_tag_order():
+    a = {"measurement": "StrengthExerciseSet", "time": T0.isoformat(), "fields": {"SetOrder": 1},
+         "tags": {"ExerciseLabel": "Squat", "ActivityID": 9, "ExerciseCategory": "SQUAT"}}
+    b = {**a, "tags": {"ActivityID": 9, "ExerciseCategory": "SQUAT", "ExerciseLabel": "Squat"}}
+    assert key_of(a) == key_of(b) == [T0, "9", "SQUAT", "Squat", "1"]
 
 
 def test_zero_length_laps_stay_apart():
@@ -203,10 +226,35 @@ def test_purge_strength_sets(store):
     assert store._query("SELECT * FROM StrengthExerciseSet;")[0] == []
 
 
-def test_batching_across_chunk_boundary(store):
+def test_batching_across_chunk_boundary(store, monkeypatch):
     store._config["batch_size"] = 3
+    sizes = []
+    real_query = store._query
+
+    def spy(sql, params=None):
+        if sql == store.UPSERT_ROWS:
+            sizes.append(len(params["rows"]))
+        return real_query(sql, params)
+    monkeypatch.setattr(store, "_query", spy)
     store.write_points([hr_point(m) for m in range(10)])
+    assert sizes == [3, 3, 3, 1]
     assert count(store, "HeartRateIntraday") == 10
+
+
+def test_purge_failure_raises(store, monkeypatch):
+    def broken(sql, params=None):
+        raise surreal_store.SurrealStoreError("IAM error: Not enough permissions")
+    monkeypatch.setattr(store, "_query", broken)
+    with pytest.raises(surreal_store.SurrealStoreError):
+        store.purge_strength_sets(7)
+
+
+def test_sync_pending_marker(store):
+    assert store.pending_sync_from() is None
+    store.mark_sync_pending(T0)
+    assert store.pending_sync_from() == T0
+    store.clear_sync_pending()
+    assert store.pending_sync_from() is None
 
 
 def test_large_gps_batch(store):
@@ -244,9 +292,18 @@ def test_database_user_can_write_only_its_database(surreal_uri, root_db):
     finally:
         surreal_store._close()
     with pytest.raises(surreal_store.SurrealStoreError):
-        surreal_store.connect({**cfg, "database": "not_garmin"})
+        surreal_store.connect({**cfg, "database": "not_garmin"})  # the user only exists on "garmin"
     with pytest.raises(surreal_store.SurrealStoreError):
         surreal_store.connect({**cfg, "password": "wrong"})
+
+
+def test_read_only_user_fails_the_write_check(surreal_uri, root_db):
+    db, ns = root_db
+    rows(db, "DEFINE USER garmin_viewer ON DATABASE PASSWORD 'pw' ROLES VIEWER;")
+    with pytest.raises(surreal_store.SurrealStoreError, match="write check returned nothing|permissions"):
+        surreal_store.connect({"uri": surreal_uri, "namespace": ns, "database": "garmin",
+                               "user": "garmin_viewer", "password": "pw", "batch_size": 2000})
+    assert surreal_store._db is None
 
 
 def test_connect_fails_fast_when_server_is_down():
@@ -265,3 +322,54 @@ def test_mem_engine_smoke():
         assert len(surreal_store._query("SELECT * FROM HeartRateIntraday;")[0]) == 9
     finally:
         surreal_store._close()
+
+
+# ---------------------------------------------------------------------------
+# Outages — a dedicated server that the test stops and starts
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def own_server():
+    import shutil, subprocess, uuid
+    from conftest import SURREALDB_IMAGE, _free_port, _wait_ready
+    if not shutil.which("docker"):
+        pytest.skip("docker not available")
+    port, name = _free_port(), f"garmin-surreal-outage-{uuid.uuid4().hex[:8]}"
+    started = subprocess.run(["docker", "run", "-d", "--name", name, "-p", f"127.0.0.1:{port}:8000",
+                              SURREALDB_IMAGE, "start", "--user", "root", "--pass", "root", "memory"],
+                             capture_output=True, text=True)
+    if started.returncode != 0:
+        pytest.skip(started.stderr.strip())
+    uri = f"ws://127.0.0.1:{port}/rpc"
+    assert _wait_ready(uri)
+    docker = lambda *args: subprocess.run(["docker", *args, name], capture_output=True, check=True)
+    yield uri, docker, lambda: _wait_ready(uri)
+    subprocess.run(["docker", "rm", "-f", name], capture_output=True)
+    surreal_store._close()
+
+
+def test_writes_resume_after_server_restart(own_server):
+    uri, docker, wait_ready = own_server
+    surreal_store.connect({"uri": uri, "namespace": "health", "database": "garmin",
+                           "user": "root", "password": "root", "batch_size": 2000})
+    surreal_store.write_points([hr_point(0)])
+    docker("restart")  # memory storage: the restarted server is empty
+    assert wait_ready()
+    surreal_store.write_points([hr_point(1)])  # dead socket -> reconnect -> write
+    assert surreal_store.last_sync_time() == T0 + timedelta(minutes=1)
+
+
+def test_store_recovers_after_a_longer_outage(own_server, monkeypatch):
+    uri, docker, wait_ready = own_server
+    monkeypatch.setattr(surreal_store, "RECONNECT_DELAYS", (0, 0.2))
+    surreal_store.connect({"uri": uri, "namespace": "health", "database": "garmin",
+                           "user": "root", "password": "root", "batch_size": 2000})
+    docker("stop")
+    with pytest.raises(surreal_store.SurrealStoreError):
+        surreal_store.write_points([hr_point(0)])
+    with pytest.raises(surreal_store.SurrealStoreError):
+        surreal_store.purge_strength_sets(1)  # same error type for every caller
+    docker("start")
+    assert wait_ready()
+    surreal_store.write_points([hr_point(2)])  # no connect() needed — reconnects on its own
+    assert surreal_store.last_sync_time() == T0 + timedelta(minutes=2)

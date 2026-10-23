@@ -681,7 +681,7 @@ def get_activity_summary(date_str):
             })
             points_list.append({
                 "measurement":  "ActivitySummary",
-                "time": (datetime.strptime(activity["startTimeGMT"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=pytz.UTC) + timedelta(seconds=int(activity.get('elapsedDuration') or activity.get('duration') or 0))).isoformat(),
+                "time": (datetime.strptime(activity["startTimeGMT"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=pytz.UTC) + timedelta(seconds=max(1, int(activity.get('elapsedDuration') or activity.get('duration') or 0)))).isoformat(), # >= 1 s so END never overwrites the summary
                 "tags": {
                     "Device": GARMIN_DEVICENAME,
                     "Database_Name": INFLUXDB_DATABASE,
@@ -729,7 +729,7 @@ def get_strength_training_data(strength_activity_id_dict):
         try:
             exercise_sets_data = garmin_obj.get_activity_exercise_sets(activity_id)
             exercises = exercise_sets_data.get('exerciseSets', []) or []
-            exercise_set_points = []
+            new_set_points = [] # Only a complete snapshot may replace (purge) the stored sets
             set_counter = 0
             for exercise in exercises:
                 set_type = exercise.get('setType', '')
@@ -752,13 +752,13 @@ def get_strength_training_data(strength_activity_id_dict):
                 data_fields = {
                     "Activity_ID": activity_id,
                     "ActivityName": activity_name,
-                    "SetOrder": int(exercise.get('setOrder', set_counter)),
+                    "SetOrder": int(exercise['setOrder']) if exercise.get('setOrder') is not None else set_counter,
                     "SetType": set_type,
-                    "Reps": int(exercise.get('repetitionCount', 0)),
+                    "Reps": int(exercise.get('repetitionCount') or 0), # null for timed sets
                     "Weight_kg": weight_kg,
                     "Duration_s": duration_s,
                 }
-                exercise_set_points.append({
+                new_set_points.append({
                     "measurement": "StrengthExerciseSet",
                     "time": set_time,
                     "tags": {
@@ -771,6 +771,7 @@ def get_strength_training_data(strength_activity_id_dict):
                     },
                     "fields": data_fields
                 })
+            exercise_set_points = new_set_points
             logging.info(f"Success : Fetching {set_counter} strength exercise sets for activity {activity_id}")
         except Exception as err:
             logging.warning(f"Failed to fetch exercise sets for activity {activity_id}: {err}")
@@ -1635,6 +1636,11 @@ def fetch_write_bulk(start_date_str, end_date_str):
                     logging.info(f"Waiting : for {RATE_LIMIT_CALLS_SECONDS} seconds")
                     time.sleep(RATE_LIMIT_CALLS_SECONDS)
                 repeat_loop = False
+            except surreal_store.SurrealStoreError as err: # Never skip a date because SurrealDB failed - wait and retry it
+                logging.error(err)
+                logging.info(f"Database Error : will retry date {current_date} in 120 seconds")
+                time.sleep(120)
+                repeat_loop = True
             except GarminConnectTooManyRequestsError as err:
                 logging.error(err)
                 logging.info(f"Too many requests (429) : Failed to fetch one or more metrics - will retry for date {current_date}")
@@ -1708,6 +1714,10 @@ if __name__ == "__main__":
             logging.error(err)
             logging.warning("No previously synced data found in SurrealDB, defaulting to 7 day initial fetching. Use specific start date ENV variable to bulk update past data")
             last_influxdb_sync_time_UTC = (datetime.today() - timedelta(days=7)).astimezone(pytz.timezone("UTC"))
+        pending_from_UTC = surreal_store.pending_sync_from() # Start of a fetch range that was cut short (crash or restart) - dates are fetched newest first
+        if pending_from_UTC and pending_from_UTC < last_influxdb_sync_time_UTC:
+            logging.warning(f"Resuming an unfinished fetch range from {pending_from_UTC} UTC")
+            last_influxdb_sync_time_UTC = pending_from_UTC
         try:
             if USER_TIMEZONE: # If provided by user, using that. 
                 local_timediff = datetime.now(tz=pytz.timezone(USER_TIMEZONE)).utcoffset()
@@ -1726,7 +1736,9 @@ if __name__ == "__main__":
             last_watch_sync_time_UTC = datetime.fromtimestamp(int(garmin_obj.get_device_last_used().get('lastUsedDeviceUploadTime')/1000)).astimezone(pytz.timezone("UTC"))
             if last_influxdb_sync_time_UTC < last_watch_sync_time_UTC:
                 logging.info(f"Update found : Current watch sync time is {last_watch_sync_time_UTC} UTC")
+                surreal_store.mark_sync_pending(last_influxdb_sync_time_UTC)
                 fetch_write_bulk((last_influxdb_sync_time_UTC + local_timediff).strftime('%Y-%m-%d'), (last_watch_sync_time_UTC + local_timediff).strftime('%Y-%m-%d')) # Using local dates for deciding which dates to fetch in current iteration (see issue #25)
+                surreal_store.clear_sync_pending()
                 last_influxdb_sync_time_UTC = last_watch_sync_time_UTC
             else:
                 logging.info(f"No new data found : Current watch and influxdb sync time is {last_watch_sync_time_UTC} UTC")

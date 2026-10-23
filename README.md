@@ -34,7 +34,14 @@ DEFINE USER garmin_writer ON DATABASE PASSWORD 'choose-one' ROLES EDITOR;
 
 All of upstream's Garmin variables still apply (`GARMINCONNECT_*`, `FETCH_SELECTION`, `USER_TIMEZONE`, `UPDATE_INTERVAL_SECONDS`, `RATE_LIMIT_CALLS_SECONDS`, `MANUAL_START_DATE`/`MANUAL_END_DATE`, …). See [`.env.example`](.env.example) and [`compose-example.yml`](compose-example.yml). Leave `solar_intensity` out of `FETCH_SELECTION` unless the watch has solar charging: on other watches Garmin's solar endpoint raises an error that skips the rest of that day's fetch.
 
-**Differences from upstream's InfluxDB behaviour:** a failed database write stops that date's fetch with an error (upstream logged and moved on, leaving a gap), and two points that would overwrite each other in one write are logged as `Collision`. Multi-user setups (`TAG_MEASUREMENTS_WITH_USER_EMAIL`) should use one SurrealDB database per user.
+**Differences from upstream's InfluxDB behaviour, all to avoid silent gaps:**
+- A failed database write never skips a date: the connection is retried for ~30 s, then the date is retried every 2 minutes until SurrealDB takes it (upstream logged and moved on).
+- The update loop stores where each fetch range starts (`meta:sync`), so a crash or restart mid-range resumes from there instead of from the newest heart-rate point.
+- Two points that would overwrite each other in one write are logged as `Collision`.
+- Strength sets are only replaced by a complete new snapshot; an activity summary's `END` marker is at least 1 s after its start.
+- Multi-user setups (`TAG_MEASUREMENTS_WITH_USER_EMAIL`) should use one SurrealDB database per user.
+
+**First run with the bundled SurrealDB:** follow the numbered steps at the top of [`compose-example.yml`](compose-example.yml) (`init.surql.example` creates the database user; `garmin_grafana/garmin_login.py` does the one-time Garmin login with a hidden password prompt).
 
 ---
 

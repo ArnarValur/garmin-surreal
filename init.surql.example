@@ -1,0 +1,7 @@
+-- garmin-surreal: create the namespace, database and writer user (run once as root).
+-- Copy to init.surql, set the password (same as SURREALDB_PASS in .env), then see compose-example.yml.
+DEFINE NAMESPACE IF NOT EXISTS health;
+USE NS health;
+DEFINE DATABASE IF NOT EXISTS garmin;
+USE NS health DB garmin;
+DEFINE USER OVERWRITE garmin_writer ON DATABASE PASSWORD 'change-me' ROLES EDITOR;

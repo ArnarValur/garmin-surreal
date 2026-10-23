@@ -15,18 +15,20 @@ writes of the same point merge field by field.
 import logging
 import math
 import os
+import time
 from datetime import datetime, timedelta, timezone
 
 from surrealdb import RecordID, Surreal
 
 # Tags that tell apart points sharing one timestamp within a measurement.
-# Kept out on purpose: Device, User_ID, ActivityName, SourceType, ActivitySelector
-# (they can drift between fetches and would duplicate rows) and Database_Name.
+# Kept out on purpose: Device, User_ID, ActivityName, ActivitySelector (they can
+# drift between fetches and would duplicate rows) and Database_Name.
 KEY_TAGS = (
     "ActivityID",        # every activity table: several activities can share a second
     "ExerciseCategory",  # StrengthExerciseSet (stale rows are purged by ActivityID first)
     "ExerciseLabel",     # StrengthExerciseSet
     "Source",            # BloodPressure: manual + synced reading in the same second
+    "SourceType",        # BodyComposition: weigh-ins without a timestamp all sit at 00:00 UTC
     "behavior",          # LifestyleJournal: every behavior of a day sits at 00:00 UTC
 )
 
@@ -43,6 +45,9 @@ KEY_FIELDS = {
 EXCLUDED_TAGS = ("Database_Name",)
 
 UPSERT_ROWS = "FOR $r IN $rows { UPSERT $r.id MERGE $r.content; };"
+
+# Waits between reconnect attempts (seconds) — rides out a SurrealDB restart.
+RECONNECT_DELAYS = (0, 1, 2, 4, 8, 15)
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 _INT64_MIN, _INT64_MAX = -(2 ** 63), 2 ** 63 - 1
@@ -150,20 +155,43 @@ def _query_once(sql, params):
     return results
 
 
-def _query(sql, params=None):
-    """Run a query, raising on any failed statement; reconnect once if the socket died."""
+def _reconnect():
+    """Replace the connection, retrying with backoff. Raises SurrealStoreError."""
     global _db
-    if _db is None:
+    _close()
+    last_err = None
+    for delay in RECONNECT_DELAYS:
+        time.sleep(delay)
+        try:
+            _db, _ = _open(_config)
+            logging.info("Reconnected to SurrealDB")
+            return
+        except Exception as err:
+            last_err = err
+    raise SurrealStoreError(f"SurrealDB unreachable: {type(last_err).__name__}: {last_err}") from last_err
+
+
+def _query(sql, params=None):
+    """Run a query, raising SurrealStoreError on any failure; reconnects if the socket died."""
+    if _config is None:
         raise SurrealStoreError("Not connected — call surreal_store.connect() first")
+    if _db is None:  # an earlier reconnect failed — try again now
+        _reconnect()
     try:
         return _query_once(sql, params)
+    except SurrealStoreError:
+        raise
     except Exception as err:
         if not _is_transport_error(err):
-            raise
+            raise SurrealStoreError(f"{type(err).__name__}: {err}") from err
         logging.warning(f"SurrealDB connection lost ({type(err).__name__}: {err}) — reconnecting")
-        _close()
-        _db, _ = _open(_config)
+    _reconnect()
+    try:
         return _query_once(sql, params)
+    except SurrealStoreError:
+        raise
+    except Exception as err:
+        raise SurrealStoreError(f"{type(err).__name__}: {err}") from err
 
 
 # ---------------------------------------------------------------------------
@@ -314,7 +342,23 @@ def purge_strength_sets(activity_id):
     except SurrealStoreError as err:
         if _is_missing_table(err):
             return True
-        logging.warning(f"Failed to purge existing StrengthExerciseSet rows for activity {activity_id}: {err}")
-        return False
+        logging.error(f"Failed to purge existing StrengthExerciseSet rows for activity {activity_id}: {err}")
+        raise  # the caller retries the whole date instead of dropping the sets
     logging.info(f"Purged existing StrengthExerciseSet rows for activity {activity_id}")
     return True
+
+
+def mark_sync_pending(start):
+    """Remember where an update range starts, so a crash mid-range resumes from there."""
+    _query("UPSERT meta:sync MERGE { pending_from: $t };", {"t": to_utc_datetime(start)})
+
+
+def clear_sync_pending():
+    _query("UPSERT meta:sync MERGE { pending_from: NONE, completed_at: time::now() };")
+
+
+def pending_sync_from():
+    """Start of an update range that never finished, or None."""
+    result = _query("SELECT VALUE pending_from FROM meta:sync;")
+    values = result[0] if result else []
+    return to_utc_datetime(values[0]) if values else None

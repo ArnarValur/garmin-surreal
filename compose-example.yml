@@ -1,10 +1,16 @@
 # garmin-surreal — Garmin Connect fetcher with SurrealDB as the only storage backend.
 #
-# Secrets (SurrealDB password, optional Garmin login) live in ./.env — copy .env.example.
-# First run needs an interactive Garmin login (MFA prompt) so tokens get saved:
-#   docker compose run --rm garmin-fetch
-# then start it for good:
-#   docker compose up -d
+# 1. cp .env.example .env and fill it in (never commit .env).
+#    mkdir garminconnect-tokens fit-files && sudo chown 1000:1000 garminconnect-tokens fit-files
+# 2. Start SurrealDB and create the namespace, database and writer user (README has the statements):
+#      docker compose up -d surrealdb
+#      docker exec -i surrealdb /surreal sql --endpoint http://localhost:8000 \
+#        --user "$SURREALDB_ROOT_USER" --pass "$SURREALDB_ROOT_PASS" < init.surql   # from init.surql.example
+# 3. One-time Garmin login (MFA prompt); tokens land in ./garminconnect-tokens:
+#      docker compose run --rm garmin-fetch python garmin_grafana/garmin_login.py
+# 4. Start the update loop:  docker compose up -d
+# Backfill a date range (exits when done; keep MANUAL_* out of .env, or the restart policy repeats it):
+#      docker compose run --rm -e MANUAL_START_DATE=2025-01-01 -e MANUAL_END_DATE=2026-10-23 garmin-fetch
 #
 # Already running SurrealDB elsewhere? Drop the surrealdb service below, put garmin-fetch on
 # that server's Docker network and point SURREALDB_URI at it.
@@ -23,7 +29,8 @@ services:
       - ./garminconnect-tokens:/home/appuser/.garminconnect # persistent Garmin tokens — folder must be owned by 1000:1000
       - ./fit-files:/home/appuser/fit_filestore # raw FIT files when KEEP_FIT_FILES=True — folder must be owned by 1000:1000
     depends_on:
-      - surrealdb
+      surrealdb:
+        condition: service_healthy
 
   surrealdb:
     image: surrealdb/surrealdb:v3.2.4
@@ -37,6 +44,11 @@ services:
       - "8000"
     volumes:
       - surrealdb-data:/data
+    healthcheck:
+      test: ["CMD", "/surreal", "is-ready", "--endpoint", "http://localhost:8000"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
 volumes:
   surrealdb-data:

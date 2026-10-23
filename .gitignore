@@ -16,3 +16,10 @@ conductor/memory
 .env
 .env.*
 !.env.example
+
+# Raw Garmin activity files (personal GPS and health data)
+fit-files/
+fit_filestore/
+*.fit
+*.tcx
+init.surql
