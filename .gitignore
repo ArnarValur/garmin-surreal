@@ -23,3 +23,6 @@ fit_filestore/
 *.fit
 *.tcx
 init.surql
+
+# Local fetch logs (personal data)
+logs/

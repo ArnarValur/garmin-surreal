@@ -19,6 +19,7 @@ import time
 from datetime import datetime, timedelta, timezone
 
 from surrealdb import RecordID, Surreal
+from surrealdb.cbor._types import CBORSimpleValue
 
 # Tags that tell apart points sharing one timestamp within a measurement.
 # Kept out on purpose: Device, User_ID, ActivityName, ActivitySelector (they can
@@ -48,6 +49,9 @@ UPSERT_ROWS = "FOR $r IN $rows { UPSERT $r.id MERGE $r.content; };"
 
 # Waits between reconnect attempts (seconds) — rides out a SurrealDB restart.
 RECONNECT_DELAYS = (0, 1, 2, 4, 8, 15)
+
+# SurrealDB NULL. Python None is sent as NONE, which drops keys from objects.
+_NULL = CBORSimpleValue(22)
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 _INT64_MIN, _INT64_MAX = -(2 ** 63), 2 ** 63 - 1
@@ -117,6 +121,7 @@ def connect(config=None):
     """
     global _db, _config
     _close()
+    _raw_tables.clear()
     _config = config or _env_config()
     cfg = _config
     target = f"{cfg['uri']} (ns={cfg['namespace']}, db={cfg['database']})"
@@ -362,3 +367,60 @@ def pending_sync_from():
     result = _query("SELECT VALUE pending_from FROM meta:sync;")
     values = result[0] if result else []
     return to_utc_datetime(values[0]) if values else None
+
+
+def _raw_value(value):
+    """Garmin JSON -> storable value, keeping nulls (as NULL) and every key."""
+    if value is None:
+        return _NULL
+    if isinstance(value, dict):
+        return {str(k): _raw_value(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_raw_value(v) for v in value]
+    if isinstance(value, int) and not isinstance(value, bool) and not _INT64_MIN <= value <= _INT64_MAX:
+        return str(value)
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
+
+
+def _leaves(value):
+    """Number of non-null scalar values in a JSON value."""
+    if value is None:
+        return 0
+    if isinstance(value, dict):
+        return sum(_leaves(v) for v in value.values())
+    if isinstance(value, (list, tuple)):
+        return sum(_leaves(v) for v in value)
+    return 1
+
+
+# Keep the stored copy in raw_history when a re-fetch brings back less
+# (Garmin offloads old intraday data, or a partial response), then replace it.
+RAW_UPSERT = """
+LET $old = (SELECT leaves, fetched_at, data FROM ONLY $id);
+IF $old != NONE AND $old.leaves > $content.leaves {
+    CREATE raw_history CONTENT { source: $id, fetched_at: $old.fetched_at, leaves: $old.leaves, data: $old.data };
+};
+UPSERT $id CONTENT $content;
+"""
+
+_raw_tables = set()
+
+
+def write_raw(method, key, data):
+    """Store one raw Garmin response as raw_<method>:[key...].
+
+    A re-fetch replaces it; if the new copy has fewer values, the old one is
+    first kept in raw_history, so a raw response is never lost.
+    """
+    table = f"raw_{method}"
+    if table not in _raw_tables:
+        if not table.replace("_", "").isalnum():
+            raise SurrealStoreError(f"Unsafe raw table name: {table!r}")
+        _query(f"DEFINE TABLE IF NOT EXISTS {table} SCHEMALESS; DEFINE TABLE IF NOT EXISTS raw_history SCHEMALESS;")
+        _raw_tables.add(table)
+    _query(RAW_UPSERT, {
+        "id": RecordID(table, list(key)),
+        "content": {"fetched_at": datetime.now(timezone.utc), "leaves": _leaves(data), "data": _raw_value(data)},
+    })

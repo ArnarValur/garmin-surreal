@@ -5,9 +5,9 @@ import base64, requests, time, pytz, logging, os, sys, dotenv, io, zipfile
 from fitparse import FitFile, FitParseError
 from datetime import datetime, timedelta
 try:
-    from . import surreal_store
+    from . import surreal_store, garmin_raw
 except ImportError:
-    import surreal_store
+    import surreal_store, garmin_raw
 import xml.etree.ElementTree as ET
 from garminconnect import (
     Garmin,
@@ -136,7 +136,7 @@ def garmin_login():
             logging.error(str(err))
             raise Exception("Garmin login failed after credential/MFA attempt")
 
-    return garmin
+    return garmin_raw.mirror(garmin) # Also stores every raw response when 'raw' is in FETCH_SELECTION
 
 
 def _is_http_status_error(err, status_code):
@@ -1613,6 +1613,9 @@ def daily_fetch_write(date_str):
         write_points_to_influxdb(get_solar_intensity(date_str))
     if 'lifestyle' in FETCH_SELECTION:
         write_points_to_influxdb(get_lifestyle_data(date_str))
+    if 'extras' in FETCH_SELECTION:
+        garmin_raw.fetch_extras(garmin_obj, date_str) # Endpoints upstream never calls, stored raw
+    garmin_raw.raise_pending() # A raw write that failed inside an upstream try block makes this date retry
 
 
 # %%

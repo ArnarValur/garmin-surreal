@@ -34,6 +34,12 @@ DEFINE USER garmin_writer ON DATABASE PASSWORD 'choose-one' ROLES EDITOR;
 
 All of upstream's Garmin variables still apply (`GARMINCONNECT_*`, `FETCH_SELECTION`, `USER_TIMEZONE`, `UPDATE_INTERVAL_SECONDS`, `RATE_LIMIT_CALLS_SECONDS`, `MANUAL_START_DATE`/`MANUAL_END_DATE`, …). See [`.env.example`](.env.example) and [`compose-example.yml`](compose-example.yml). Leave `solar_intensity` out of `FETCH_SELECTION` unless the watch has solar charging: on other watches Garmin's solar endpoint raises an error that skips the rest of that day's fetch.
 
+**Everything Garmin returns (`raw` and `extras` in `FETCH_SELECTION`).** Upstream keeps only some fields of each Garmin response. With `raw`, every response is also stored whole in a `raw_<method>` table, keyed by the call's arguments (`raw_get_sleep_data:['2026-10-22']`, `raw_get_activity_weather:['24816165305']`; calls without arguments are one snapshot per day). Nulls are stored as `NULL`, so no key is lost. With `extras`, each fetched day also calls the endpoints upstream never uses: SpO2, Body Battery events and charge/drain, auto-detected activities, floors, intensity minutes, resting HR, respiration, nutrition; for each activity the full summary, details, weather, splits, HR zones and gear; and once a day the profile, devices and their settings, HR zones, personal records, badges, goals, workouts, training plans and gear. `extras` roughly doubles the Garmin calls per day.
+
+```sql
+SELECT data.dailySleepDTO.sleepScores FROM raw_get_sleep_data:['2026-10-01']..['2026-11-01'];
+```
+
 **Differences from upstream's InfluxDB behaviour, all to avoid silent gaps:**
 - A failed database write never skips a date: the connection is retried for ~30 s, then the date is retried every 2 minutes until SurrealDB takes it (upstream logged and moved on).
 - The update loop stores where each fetch range starts (`meta:sync`), so a crash or restart mid-range resumes from there instead of from the newest heart-rate point.
