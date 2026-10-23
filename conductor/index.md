@@ -19,7 +19,7 @@
 
 - Track plans — `tracks/<domain>/<track-id>/plan.md` (+ `spec.md`) · written by `/new-track` (creates), the working session (ticks tasks), `/checkpoint` (updates)
 - Decisions — `adr/` (load by domain, never wholesale) · written by `/grill`, `/new-track` and `/checkpoint`, only for decisions proposed and approved in-session
-- Technical rules — `agent-rules/technical.md` _(lazy)_ · written by `/checkpoint`
+- [Technical rules](./agent-rules/technical.md) · written by `/checkpoint`
 - [Project Context](./project-context.md) — identity, guidelines, tech stack · written by the human (init creates it)
 - Product requirements — `prd.md` _(lazy)_ · written by `/grill`
 - Long-form docs — `docs/` (load specific files only) · written by the human
