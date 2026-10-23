@@ -8,3 +8,6 @@ src/garmin_grafana.egg-info/requires.txt
 src/garmin_grafana.egg-info/SOURCES.txt
 src/garmin_grafana.egg-info/top_level.txt
 __pycache__
+
+# Claude auto-memory symlink (machine-local, never commit)
+conductor/memory
