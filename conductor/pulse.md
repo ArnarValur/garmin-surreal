@@ -1,16 +1,15 @@
 # Pulse — garmin-surreal
 
-> **Updated:** 2026-10-23 19:05 by checkpoint
+> **Updated:** 2026-10-23 19:45 by checkpoint
 > State only, cap ~60 lines. Rewritten from scratch at every checkpoint —
 > if you are appending to this file, you are doing it wrong.
 
 ## 📍 Now — what runs where
 
-- Repo `~/Projects/garmin-surreal`, `main`; fork of upstream `895bfa7` at `github.com/ArnarValur/garmin-surreal` (remote `upstream` = arpanghosh8453/garmin-grafana).
-- SurrealDB backend done: `src/garmin_grafana/surreal_store.py` + 4 touch points in `garmin_fetch.py` (+ date retry, resume marker, strength-set and END fixes). 48 tests pass (`uv run --with pytest pytest tests -q`), on a throwaway SurrealDB 3.2.4 container and on the PlutoII bench.
-- PlutoII bench SurrealDB (`pluto-surrealdb` 3.2.4, port 8000): namespace `health`, db `garmin`, user `garmin_writer` (EDITOR). Holds only `meta`. Password in the repo's git-ignored `.env`.
-- No fetcher running anywhere. Nothing deployed to Saturn.
-- Local `.env` (600, git-ignored) sets `TZ=UTC`, token dir `./garminconnect-tokens`, FIT files `./fit-files`.
+- **Saturn (production):** `/srv/saturn-docker/garmin/` — `garmin-fetch` (image `garmin-surreal:surreal-v0.1.0`, update loop every 300 s, `restart: unless-stopped`) + `health-surrealdb` (SurrealDB 3.2.4, saturn-net, port 8087). Namespace `health`, db `garmin`, user `garmin_writer`. `.env` 640 claude:docker; Garmin tokens in `garminconnect-tokens/` (copied from PlutoII, 600 uid 1000); raw FIT files in `fit-files/`. Run `docker compose` there as `claude` (docker group).
+- **Saturn backfill:** container `garmin-backfill` (`docker compose run -d`), 2025-10-23 → 2026-10-15, `REQUEST_INTRADAY_DATA_REFRESH=True` (Garmin restores offloaded intraday data; a DENIED reply pauses it 24 h). Check: `docker logs garmin-backfill | grep -E "Bulk update success|Traceback|DENIED"`; remove the container when done.
+- **Repo:** `~/Projects/garmin-surreal`, `main` = tag `surreal-v0.1.0` (pushed to `ArnarValur/garmin-surreal`). 62 tests pass. Upstream tags `v0.x` are upstream's — the fork tags `surreal-v*`.
+- **PlutoII bench:** `pluto-surrealdb` `health/garmin` holds 30 days + raw tables from the bench runs. No fetcher running on PlutoII anymore.
 
 ## 🚀 Active tracks
 
@@ -18,18 +17,18 @@
 
 ## ⚠️ Blockers
 
-- Garmin login: the account is on an old email Arnar can't reach; Garmin support is changing it (expected next week). Blocks T3/T4/T5 and the capability probe.
+- None.
 
 ## 📋 Next queue
 
-1. Once the email is changed: `.venv/bin/python src/garmin_grafana/garmin_login.py` (with `.env` sourced) on PlutoII.
-2. Run `scripts/garmin_capability_probe.py` (output outside the repo) — which endpoints return data for the Venu 2 Plus + scale.
-3. T4: run `garmin_fetch.py` (7-day default), 2–3 update cycles, re-fetch → row counts stable; grep logs for `Collision`.
-4. T5: ~30-day backfill, per-table counts, spot-check a weigh-in and a sleep night against the Connect app.
-5. ADR candidate (deferred): Saturn storage — new `health-surrealdb` on saturn-net, host port 8087 (respects Saturn ADR-0014: owui-surrealdb is OWUI-only) vs the spec's `owui-surrealdb`. Ask Arnar before deploying.
-6. Saturn deploy prep → wait for Arnar's go.
-7. "Dig everything": raw-JSON mirror of every Garmin response + extra endpoints (SpO2, Body Battery events, sleep sub-scores, …) — see the track's garmin-coverage.md.
+1. When `garmin-backfill` finishes: per-table counts on Saturn, spot-check an old day (intraday restored?), `docker rm garmin-backfill`.
+2. Watch the first days of the Saturn loop (`docker logs garmin-fetch | grep -E "ERROR|Collision|Skipped"`).
+3. After the US DST change / Oslo DST (25 Oct): upstream computes the UTC offset once at start — restart `garmin-fetch` or confirm dates still line up.
+4. Backups for `health-surrealdb-data` (not set up).
+5. Parse useful raw tables into views (sleep sub-scores, SpO2, floors, weather) — track later.
+6. Later per spec §9: aggregate tables, own dashboard, MCP/Hermes read tool over `health/garmin`.
 
 ## 📌 Parked
 
-- Upstream bugs left as-is (minimal diff): fit_activity_importer END marker < 1 s, `return []` with FORCE_REPROCESS_ACTIVITIES=False, LactateThreshold time depends on host TZ, SleepSummary ID moves when a sleep window is edited, naps not stored → plan.md "Known upstream issues".
+- Upstream bugs left as-is (minimal diff) → plan.md "Known upstream issues".
+- Garmin account email change still pending at support (login works with the old address).

@@ -5,7 +5,7 @@
 
 ## Active
 
-- 🔄 **surrealdb_backend_20261023** — feature: InfluxDB → SurrealDB backend; built + reviewed, bench live fetch blocked on Garmin login → tracks/storage/surrealdb_backend_20261023/plan.md
+- 🔄 **surrealdb_backend_20261023** — feature: InfluxDB → SurrealDB backend; live on Saturn (surreal-v0.1.0), 1-year backfill running → tracks/storage/surrealdb_backend_20261023/plan.md
 
 ## Done
 

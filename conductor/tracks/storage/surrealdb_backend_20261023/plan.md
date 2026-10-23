@@ -21,16 +21,22 @@
 ## Phase 3 — Bench on PlutoII
 
 - [x] T2 integration against local SurrealDB with the dedicated user (`garmin_writer`)
-- [ ] Garmin login (`src/garmin_grafana/garmin_login.py`) — **blocked: account email change pending at Garmin support**
-- [ ] Capability probe (`scripts/garmin_capability_probe.py`)
-- [ ] T4 live: 7-day fetch, 2–3 update cycles, stable counts on re-fetch
-- [ ] T3 uniqueness on real data (`Collision` warnings in the logs)
-- [ ] T5 ~30-day backfill, per-table counts, spot-checks against the Connect app
+- [x] Garmin login (`src/garmin_grafana/garmin_login.py`) — old email + remembered password
+- [x] Capability probe (`scripts/garmin_capability_probe.py`) — 50+ endpoints return data
+- [x] T4 live: 7-day fetch, update cycles, phone sync stored within 5 min
+- [x] T3 on real data: only 4 `Collision`s in 31 days, all duplicate sleep-respiration epochs (InfluxDB merged them too; raw keeps both)
+- [x] T5 30-day backfill: re-fetched days unchanged; weigh-in + sleep night confirmed by Arnar
 
 ## Phase 4 — Saturn (after Arnar's go)
 
-- [ ] Decide storage instance (ADR candidate: dedicated `health-surrealdb`, port 8087, vs `owui-surrealdb`)
-- [ ] Image build (arm64), `health/garmin` + dedicated user, compose service, interactive login, full backfill
+- [x] Storage: own `health-surrealdb` (ADR-0001)
+- [x] Image `garmin-surreal:surreal-v0.1.0` built on Saturn, `health/garmin` + `garmin_writer`, compose stack, tokens copied, loop live, survives restart
+- [ ] 1-year backfill (2025-10-23 →) with intraday refresh — running
+
+## Phase 5 — Everything Garmin has
+
+- [x] `raw` mirror + `extras` endpoints (garmin_raw.py), review: 9 fixes
+- [ ] Read useful raw tables out (sleep sub-scores, SpO2, floors, weather, PRs)
 
 ## Deviations from the spec
 
@@ -39,6 +45,8 @@
 - **D3 Failed writes** raise and the date is retried every 2 min (upstream logged and skipped → permanent gap). `meta:sync.pending_from` lets a crash resume its range.
 - **D4 Small upstream fixes** that would lose data: strength sets replaced only by a complete snapshot (null reps aborted the loop), ActivitySummary END marker ≥ 1 s after start.
 - **D5 FETCH_SELECTION** leaves out `solar_intensity`: on a non-solar watch Garmin raises and the rest of that day is skipped.
+- **D7 Backfill depth**: 1 year (Arnar, 2026-10-23), not full history.
+- **D8 Raw + extras** go beyond the spec's scope, following Arnar's goal to get everything Garmin has.
 - **D6 Extra files**: `garmin_login.py` (hidden-password login helper), `scripts/garmin_capability_probe.py`, `init.surql.example`, tests.
 
 ## Known upstream issues (left as-is, minimal diff)
