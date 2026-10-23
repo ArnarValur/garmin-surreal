@@ -62,3 +62,18 @@ def test_strength_purge_runs_through_the_touch_point(garmin_fetch):
     garmin_fetch.write_points_to_influxdb(sets)
     assert garmin_fetch.purge_existing_strength_exercise_sets(5) is True
     assert surreal_store._query("SELECT * FROM StrengthExerciseSet;")[0] == []
+
+
+def test_intraday_refresh_uses_request_reload(garmin_fetch, monkeypatch):
+    class Fake:
+        reloads = []
+
+        def request_reload(self, day):
+            self.reloads.append(day)
+            return {"status": "COMPLETE"}
+    fake = Fake()
+    monkeypatch.setattr(garmin_fetch, "garmin_obj", fake)
+    monkeypatch.setattr(garmin_fetch, "REQUEST_INTRADAY_DATA_REFRESH", True)
+    monkeypatch.setattr(garmin_fetch, "FETCH_SELECTION", "")
+    garmin_fetch.daily_fetch_write("2025-01-01")
+    assert fake.reloads == ["2025-01-01"]

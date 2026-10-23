@@ -1547,7 +1547,7 @@ def get_lifestyle_data(date_str):
 # %%
 def daily_fetch_write(date_str):
     if REQUEST_INTRADAY_DATA_REFRESH and (datetime.strptime(date_str, "%Y-%m-%d") <= (datetime.today() - timedelta(days=IGNORE_INTRADAY_DATA_REFRESH_DAYS))):
-        data_refresh_response = garmin_obj.connectapi(f"wellness-service/wellness/epoch/request/{date_str}", method="POST").get("status", "Unknown")
+        data_refresh_response = garmin_obj.request_reload(date_str).get("status", "Unknown") # connectapi(..., method="POST") breaks on garminconnect 0.3.7
         logging.info(f"Intraday data refresh request status: {data_refresh_response}")
         if data_refresh_response == "SUBMITTED":
             logging.info(f"Waiting 10 seconds for refresh request to process...")
@@ -1560,7 +1560,7 @@ def daily_fetch_write(date_str):
         elif data_refresh_response == "DENIED":
             logging.info(f"Daily refresh limit reached. Pausing script for 24 hours to ensure Intraday data fetching. Disable REQUEST_INTRADAY_DATA_REFRESH to avoid this!")
             time.sleep(86500)
-            data_refresh_response = garmin_obj.connectapi(f"wellness-service/wellness/epoch/request/{date_str}", method="POST").get("status", "Unknown")
+            data_refresh_response = garmin_obj.request_reload(date_str).get("status", "Unknown") # connectapi(..., method="POST") breaks on garminconnect 0.3.7
             logging.info(f"Intraday data refresh request status: {data_refresh_response}")
             logging.info(f"Waiting 10 seconds...")
             time.sleep(10)
